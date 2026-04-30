@@ -49,6 +49,14 @@ function createTables() {
       orderDate DATETIME DEFAULT CURRENT_TIMESTAMP
     )`, (err) => { if (err) console.error(err); else console.log('✅ Orders table ready'); });
 
+    // ✅ NEW — Services table
+    db.run(`CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      image TEXT
+    )`, (err) => { if (err) console.error(err); else console.log('✅ Services table ready'); });
+
     // Appointments table
     db.run(`CREATE TABLE IF NOT EXISTS Appointments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +113,94 @@ app.post('/api/products', (req, res) => {
       res.status(201).json({ id: this.lastID, name, price, image });
     }
   );
+});
+
+// ✅ NEW — PUT update product
+app.put('/api/products/:id', (req, res) => {
+  const { name, price, image = '' } = req.body;
+  if (!name || price === undefined) {
+    return res.status(400).json({ error: 'name and price are required' });
+  }
+  db.run(
+    'UPDATE Products SET name = ?, price = ?, image = ? WHERE id = ?',
+    [name, price, image, req.params.id],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
+      res.json({ id: Number(req.params.id), name, price, image });
+    }
+  );
+});
+
+// ✅ NEW — DELETE product
+app.delete('/api/products/:id', (req, res) => {
+  db.run('DELETE FROM Products WHERE id = ?', [req.params.id], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
+    res.json({ deleted: true, id: Number(req.params.id) });
+  });
+});
+
+// ─────────────────────────────────────────
+// ✅ NEW — SERVICES ENDPOINTS (Full CRUD)
+// ─────────────────────────────────────────
+// GET all services
+app.get('/api/services', (req, res) => {
+  db.all('SELECT * FROM Services', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// GET single service by ID
+app.get('/api/services/:id', (req, res) => {
+  db.get('SELECT * FROM Services WHERE id = ?', [req.params.id], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: 'Service not found' });
+    res.json(row);
+  });
+});
+
+// POST create service
+app.post('/api/services', (req, res) => {
+  const { name, price, image = '' } = req.body;
+  if (!name || price === undefined) {
+    return res.status(400).json({ error: 'name and price are required' });
+  }
+  db.run(
+    'INSERT INTO Services (name, price, image) VALUES (?, ?, ?)',
+    [name, price, image],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.status(201).json({ id: this.lastID, name, price, image });
+    }
+  );
+});
+
+// PUT update service
+app.put('/api/services/:id', (req, res) => {
+  const { name, price, image = '' } = req.body;
+  if (!name || price === undefined) {
+    return res.status(400).json({ error: 'name and price are required' });
+  }
+  db.run(
+    'UPDATE Services SET name = ?, price = ?, image = ? WHERE id = ?',
+    [name, price, image, req.params.id],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
+      res.json({ id: Number(req.params.id), name, price, image });
+    }
+  );
+});
+
+// DELETE service
+app.delete('/api/services/:id', (req, res) => {
+  db.run('DELETE FROM Services WHERE id = ?', [req.params.id], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
+    res.json({ deleted: true, id: Number(req.params.id) });
+  });
 });
 
 // ─────────────────────────────────────────
