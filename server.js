@@ -4,13 +4,49 @@
  * Run: npm install express sqlite3 cors && node server.js
  */
 
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const cors = require('cors');
-const path = require('path');
+require('dotenv').config();
+const express     = require('express');
+const sqlite3     = require('sqlite3').verbose();
+const cors        = require('cors');
+const path        = require('path');
+const multer      = require('multer');
+const cloudinary  = require('cloudinary').v2;
+const streamifier = require('streamifier');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ─────────────────────────────────────────
+// CLOUDINARY CONFIGURATION
+// ─────────────────────────────────────────
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// ─────────────────────────────────────────
+// MULTER — memory storage (no disk writes)
+// ─────────────────────────────────────────
+const upload = multer({ storage: multer.memoryStorage() });
+
+// ─────────────────────────────────────────
+// CLOUDINARY UPLOAD HELPER
+// Streams a buffer to Cloudinary, returns secure_url
+// ─────────────────────────────────────────
+function uploadToCloudinary(buffer, folder) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: folder || 'salon', resource_type: 'image' },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+    streamifier.createReadStream(buffer).pipe(stream);
+  });
+}
+
 
 // ─────────────────────────────────────────
 // MIDDLEWARE
@@ -99,37 +135,53 @@ app.get('/api/products', (req, res) => {
   });
 });
 
-// POST create product
-app.post('/api/products', (req, res) => {
-  const { name, price, image = '' } = req.body;
+// POST create product (multipart/form-data or JSON)
+app.post('/api/products', upload.single('image'), async (req, res) => {
+  const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
-  db.run(
-    'INSERT INTO Products (name, price, image) VALUES (?, ?, ?)',
-    [name, price, image],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: this.lastID, name, price, image });
+  try {
+    let image = req.body.imageUrl || '';
+    if (req.file) {
+      image = await uploadToCloudinary(req.file.buffer, 'salon/products');
     }
-  );
+    db.run(
+      'INSERT INTO Products (name, price, image) VALUES (?, ?, ?)',
+      [name, price, image],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.status(201).json({ id: this.lastID, name, price, image });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+  }
 });
 
-// ✅ NEW — PUT update product
-app.put('/api/products/:id', (req, res) => {
-  const { name, price, image = '' } = req.body;
+// PUT update product (multipart/form-data or JSON)
+app.put('/api/products/:id', upload.single('image'), async (req, res) => {
+  const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
-  db.run(
-    'UPDATE Products SET name = ?, price = ?, image = ? WHERE id = ?',
-    [name, price, image, req.params.id],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
-      res.json({ id: Number(req.params.id), name, price, image });
+  try {
+    let image = req.body.imageUrl || '';
+    if (req.file) {
+      image = await uploadToCloudinary(req.file.buffer, 'salon/products');
     }
-  );
+    db.run(
+      'UPDATE Products SET name = ?, price = ?, image = ? WHERE id = ?',
+      [name, price, image, req.params.id],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
+        res.json({ id: Number(req.params.id), name, price, image });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+  }
 });
 
 // ✅ NEW — DELETE product
@@ -161,37 +213,53 @@ app.get('/api/services/:id', (req, res) => {
   });
 });
 
-// POST create service
-app.post('/api/services', (req, res) => {
-  const { name, price, image = '' } = req.body;
+// POST create service (multipart/form-data or JSON)
+app.post('/api/services', upload.single('image'), async (req, res) => {
+  const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
-  db.run(
-    'INSERT INTO Services (name, price, image) VALUES (?, ?, ?)',
-    [name, price, image],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: this.lastID, name, price, image });
+  try {
+    let image = req.body.imageUrl || '';
+    if (req.file) {
+      image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
-  );
+    db.run(
+      'INSERT INTO Services (name, price, image) VALUES (?, ?, ?)',
+      [name, price, image],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.status(201).json({ id: this.lastID, name, price, image });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+  }
 });
 
-// PUT update service
-app.put('/api/services/:id', (req, res) => {
-  const { name, price, image = '' } = req.body;
+// PUT update service (multipart/form-data or JSON)
+app.put('/api/services/:id', upload.single('image'), async (req, res) => {
+  const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
-  db.run(
-    'UPDATE Services SET name = ?, price = ?, image = ? WHERE id = ?',
-    [name, price, image, req.params.id],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
-      res.json({ id: Number(req.params.id), name, price, image });
+  try {
+    let image = req.body.imageUrl || '';
+    if (req.file) {
+      image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
-  );
+    db.run(
+      'UPDATE Services SET name = ?, price = ?, image = ? WHERE id = ?',
+      [name, price, image, req.params.id],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
+        res.json({ id: Number(req.params.id), name, price, image });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+  }
 });
 
 // DELETE service
