@@ -1,12 +1,12 @@
 /**
  * server.js — صالون وردة البنفسج
  * Node.js + Express + SQLite3 Backend
- * Run: npm install express sqlite3 cors && node server.js
+ * Run: npm install && node server.js
  */
 
 require('dotenv').config();
 const express     = require('express');
-const sqlite3     = require('sqlite3').verbose();
+const { Pool }    = require('pg');
 const cors        = require('cors');
 const path        = require('path');
 const multer      = require('multer');
@@ -55,84 +55,104 @@ app.use(cors());
 app.use(express.json());
 
 // ─────────────────────────────────────────
-// DATABASE SETUP
+// DATABASE SETUP — PostgreSQL
 // ─────────────────────────────────────────
-const db = new sqlite3.Database('./salon.db', (err) => {
-  if (err) {
-    console.error('❌ DB Connection error:', err.message);
-  } else {
-    console.log('✅ Connected to SQLite database.');
-    createTables();
-  }
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
-function createTables() {
-  db.serialize(() => {
-    // Products table
-    db.run(`CREATE TABLE IF NOT EXISTS Products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      image TEXT
-    )`, (err) => { if (err) console.error(err); else console.log('✅ Products table ready'); });
+async function createTables() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS Products (
+        id   SERIAL PRIMARY KEY,
+        name TEXT    NOT NULL,
+        price NUMERIC NOT NULL,
+        image TEXT   DEFAULT ''
+      )
+    `);
+    console.log('✅ Products table ready');
 
-    // Orders table
-    db.run(`CREATE TABLE IF NOT EXISTS Orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customerName TEXT NOT NULL,
-      customerPhone TEXT NOT NULL,
-      totalAmount REAL NOT NULL,
-      orderDate DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`, (err) => { if (err) console.error(err); else console.log('✅ Orders table ready'); });
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS Orders (
+        id            SERIAL PRIMARY KEY,
+        "customerName"  TEXT    NOT NULL,
+        "customerPhone" TEXT    NOT NULL,
+        "totalAmount"   NUMERIC NOT NULL,
+        "orderDate"     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Orders table ready');
 
-    // ✅ NEW — Services table
-    db.run(`CREATE TABLE IF NOT EXISTS Services (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      image TEXT
-    )`, (err) => { if (err) console.error(err); else console.log('✅ Services table ready'); });
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS Services (
+        id    SERIAL PRIMARY KEY,
+        name  TEXT    NOT NULL,
+        price NUMERIC NOT NULL,
+        image TEXT    DEFAULT ''
+      )
+    `);
+    console.log('✅ Services table ready');
 
-    // Appointments table
-    db.run(`CREATE TABLE IF NOT EXISTS Appointments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customerName TEXT NOT NULL,
-      customerPhone TEXT NOT NULL,
-      serviceName TEXT NOT NULL,
-      apptDate TEXT NOT NULL,
-      apptTime TEXT NOT NULL,
-      status TEXT DEFAULT 'pending'
-    )`, (err) => { if (err) console.error(err); else console.log('✅ Appointments table ready'); });
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS Appointments (
+        id              SERIAL PRIMARY KEY,
+        "customerName"  TEXT NOT NULL,
+        "customerPhone" TEXT NOT NULL,
+        "serviceName"   TEXT NOT NULL,
+        "apptDate"      TEXT NOT NULL,
+        "apptTime"      TEXT NOT NULL,
+        status          TEXT DEFAULT 'pending'
+      )
+    `);
+    console.log('✅ Appointments table ready');
 
-    // Insert sample products if empty
-    db.get('SELECT COUNT(*) as count FROM Products', (err, row) => {
-      if (!err && row.count === 0) {
-        const samples = [
-          ['كريم مرطب فاخر', 45, ''],
-          ['مجموعة العناية بالشعر', 89, ''],
-          ['ماسك للوجه - ورد البنفسج', 35, ''],
-          ['سيروم مضاد للتجاعيد', 120, ''],
-          ['زيت الأرغان الطبيعي', 65, ''],
-          ['مجموعة العطور', 150, ''],
-        ];
-        const stmt = db.prepare('INSERT INTO Products (name, price, image) VALUES (?, ?, ?)');
-        samples.forEach(s => stmt.run(s));
-        stmt.finalize();
-        console.log('✅ Sample products inserted');
+    // Insert sample products if table is empty
+    const { rows } = await client.query('SELECT COUNT(*) AS count FROM Products');
+    if (parseInt(rows[0].count) === 0) {
+      const samples = [
+        ['كريم مرطب فاخر', 45, ''],
+        ['مجموعة العناية بالشعر', 89, ''],
+        ['ماسك للوجه - ورد البنفسج', 35, ''],
+        ['سيروم مضاد للتجاعيد', 120, ''],
+        ['زيت الأرغان الطبيعي', 65, ''],
+        ['مجموعة العطور', 150, ''],
+      ];
+      for (const [name, price, image] of samples) {
+        await client.query(
+          'INSERT INTO Products (name, price, image) VALUES ($1, $2, $3)',
+          [name, price, image]
+        );
       }
-    });
-  });
+      console.log('✅ Sample products inserted');
+    }
+  } finally {
+    client.release();
+  }
 }
+
+// Connect and initialise tables on startup
+pool.connect()
+  .then(client => {
+    console.log('✅ Connected to PostgreSQL database.');
+    client.release();
+    return createTables();
+  })
+  .catch(err => console.error('❌ DB Connection error:', err.message));
 
 // ─────────────────────────────────────────
 // PRODUCTS ENDPOINTS
 // ─────────────────────────────────────────
 // GET all products
-app.get('/api/products', (req, res) => {
-  db.all('SELECT * FROM Products', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/products', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM Products ORDER BY id');
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST create product (multipart/form-data or JSON)
@@ -146,16 +166,13 @@ app.post('/api/products', upload.single('image'), async (req, res) => {
     if (req.file) {
       image = await uploadToCloudinary(req.file.buffer, 'salon/products');
     }
-    db.run(
-      'INSERT INTO Products (name, price, image) VALUES (?, ?, ?)',
-      [name, price, image],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({ id: this.lastID, name, price, image });
-      }
+    const { rows } = await pool.query(
+      'INSERT INTO Products (name, price, image) VALUES ($1, $2, $3) RETURNING *',
+      [name, price, image]
     );
+    res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+    res.status(500).json({ error: 'Upload or DB error: ' + err.message });
   }
 });
 
@@ -170,47 +187,50 @@ app.put('/api/products/:id', upload.single('image'), async (req, res) => {
     if (req.file) {
       image = await uploadToCloudinary(req.file.buffer, 'salon/products');
     }
-    db.run(
-      'UPDATE Products SET name = ?, price = ?, image = ? WHERE id = ?',
-      [name, price, image, req.params.id],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
-        res.json({ id: Number(req.params.id), name, price, image });
-      }
+    const { rows } = await pool.query(
+      'UPDATE Products SET name=$1, price=$2, image=$3 WHERE id=$4 RETURNING *',
+      [name, price, image, req.params.id]
     );
+    if (!rows.length) return res.status(404).json({ error: 'Product not found' });
+    res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+    res.status(500).json({ error: 'Upload or DB error: ' + err.message });
   }
 });
 
-// ✅ NEW — DELETE product
-app.delete('/api/products/:id', (req, res) => {
-  db.run('DELETE FROM Products WHERE id = ?', [req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    if (this.changes === 0) return res.status(404).json({ error: 'Product not found' });
+// DELETE product
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM Products WHERE id=$1', [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: 'Product not found' });
     res.json({ deleted: true, id: Number(req.params.id) });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────
 // ✅ NEW — SERVICES ENDPOINTS (Full CRUD)
 // ─────────────────────────────────────────
 // GET all services
-app.get('/api/services', (req, res) => {
-  db.all('SELECT * FROM Services', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/services', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM Services ORDER BY id');
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET single service by ID
-app.get('/api/services/:id', (req, res) => {
-  db.get('SELECT * FROM Services WHERE id = ?', [req.params.id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: 'Service not found' });
-    res.json(row);
-  });
+app.get('/api/services/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM Services WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Service not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST create service (multipart/form-data or JSON)
@@ -224,16 +244,13 @@ app.post('/api/services', upload.single('image'), async (req, res) => {
     if (req.file) {
       image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
-    db.run(
-      'INSERT INTO Services (name, price, image) VALUES (?, ?, ?)',
-      [name, price, image],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.status(201).json({ id: this.lastID, name, price, image });
-      }
+    const { rows } = await pool.query(
+      'INSERT INTO Services (name, price, image) VALUES ($1, $2, $3) RETURNING *',
+      [name, price, image]
     );
+    res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+    res.status(500).json({ error: 'Upload or DB error: ' + err.message });
   }
 });
 
@@ -248,95 +265,104 @@ app.put('/api/services/:id', upload.single('image'), async (req, res) => {
     if (req.file) {
       image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
-    db.run(
-      'UPDATE Services SET name = ?, price = ?, image = ? WHERE id = ?',
-      [name, price, image, req.params.id],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
-        res.json({ id: Number(req.params.id), name, price, image });
-      }
+    const { rows } = await pool.query(
+      'UPDATE Services SET name=$1, price=$2, image=$3 WHERE id=$4 RETURNING *',
+      [name, price, image, req.params.id]
     );
+    if (!rows.length) return res.status(404).json({ error: 'Service not found' });
+    res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Cloudinary upload failed: ' + err.message });
+    res.status(500).json({ error: 'Upload or DB error: ' + err.message });
   }
 });
 
 // DELETE service
-app.delete('/api/services/:id', (req, res) => {
-  db.run('DELETE FROM Services WHERE id = ?', [req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    if (this.changes === 0) return res.status(404).json({ error: 'Service not found' });
+app.delete('/api/services/:id', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM Services WHERE id=$1', [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: 'Service not found' });
     res.json({ deleted: true, id: Number(req.params.id) });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────
 // ORDERS ENDPOINTS
 // ─────────────────────────────────────────
 // GET all orders
-app.get('/api/orders', (req, res) => {
-  db.all('SELECT * FROM Orders ORDER BY orderDate DESC', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/orders', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM Orders ORDER BY "orderDate" DESC');
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST create order
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', async (req, res) => {
   const { customerName, customerPhone, totalAmount } = req.body;
   if (!customerName || !customerPhone || totalAmount === undefined) {
     return res.status(400).json({ error: 'customerName, customerPhone, totalAmount required' });
   }
-  db.run(
-    'INSERT INTO Orders (customerName, customerPhone, totalAmount) VALUES (?, ?, ?)',
-    [customerName, customerPhone, totalAmount],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: this.lastID, customerName, customerPhone, totalAmount });
-    }
-  );
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO Orders ("customerName", "customerPhone", "totalAmount")
+       VALUES ($1, $2, $3) RETURNING *`,
+      [customerName, customerPhone, totalAmount]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────
 // APPOINTMENTS ENDPOINTS
 // ─────────────────────────────────────────
 // GET all appointments
-app.get('/api/appointments', (req, res) => {
-  db.all(
-    `SELECT * FROM Appointments ORDER BY apptDate ASC, apptTime ASC`,
-    [],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
+app.get('/api/appointments', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM Appointments ORDER BY "apptDate" ASC, "apptTime" ASC'
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST create appointment
-app.post('/api/appointments', (req, res) => {
+app.post('/api/appointments', async (req, res) => {
   const { customerName, customerPhone, serviceName, apptDate, apptTime } = req.body;
   if (!customerName || !customerPhone || !serviceName || !apptDate || !apptTime) {
     return res.status(400).json({ error: 'All fields are required' });
   }
-  db.run(
-    `INSERT INTO Appointments (customerName, customerPhone, serviceName, apptDate, apptTime)
-     VALUES (?, ?, ?, ?, ?)`,
-    [customerName, customerPhone, serviceName, apptDate, apptTime],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: this.lastID, customerName, customerPhone, serviceName, apptDate, apptTime, status: 'pending' });
-    }
-  );
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO Appointments ("customerName", "customerPhone", "serviceName", "apptDate", "apptTime")
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [customerName, customerPhone, serviceName, apptDate, apptTime]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // PATCH update appointment status
-app.patch('/api/appointments/:id', (req, res) => {
+app.patch('/api/appointments/:id', async (req, res) => {
   const { status } = req.body;
-  db.run('UPDATE Appointments SET status = ? WHERE id = ?', [status, req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ updated: this.changes });
-  });
+  try {
+    const { rowCount } = await pool.query(
+      'UPDATE Appointments SET status=$1 WHERE id=$2',
+      [status, req.params.id]
+    );
+    res.json({ updated: rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────
