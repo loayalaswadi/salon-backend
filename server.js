@@ -1,10 +1,11 @@
 /**
  * server.js — صالون وردة البنفسج
- * Node.js + Express + SQLite3 Backend
+ * Node.js + Express + PostgreSQL Backend
  * Run: npm install && node server.js
  */
 
 require('dotenv').config();
+const jwt         = require('jsonwebtoken');
 const express     = require('express');
 const { Pool }    = require('pg');
 const cors        = require('cors');
@@ -32,7 +33,6 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // ─────────────────────────────────────────
 // CLOUDINARY UPLOAD HELPER
-// Streams a buffer to Cloudinary, returns secure_url
 // ─────────────────────────────────────────
 function uploadToCloudinary(buffer, folder) {
   return new Promise((resolve, reject) => {
@@ -47,12 +47,41 @@ function uploadToCloudinary(buffer, folder) {
   });
 }
 
-
 // ─────────────────────────────────────────
 // MIDDLEWARE
 // ─────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
+
+// ─────────────────────────────────────────
+// AUTH — Login endpoint
+// ─────────────────────────────────────────
+app.post('/api/login', (req, res) => {
+  const { password } = req.body;
+  if (!password || password !== process.env.ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '24h' });
+  res.json({ token });
+});
+
+// ─────────────────────────────────────────
+// AUTH — verifyAdmin middleware
+// ─────────────────────────────────────────
+function verifyAdmin(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : null;
+
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    req.admin = decoded;
+    next();
+  });
+}
 
 // ─────────────────────────────────────────
 // DATABASE SETUP — PostgreSQL
@@ -144,8 +173,9 @@ pool.connect()
 
 // ─────────────────────────────────────────
 // PRODUCTS ENDPOINTS
+// GET /api/products — public
+// POST, PUT, DELETE — protected
 // ─────────────────────────────────────────
-// GET all products
 app.get('/api/products', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM Products ORDER BY id');
@@ -155,8 +185,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// POST create product (multipart/form-data or JSON)
-app.post('/api/products', upload.single('image'), async (req, res) => {
+app.post('/api/products', verifyAdmin, upload.single('image'), async (req, res) => {
   const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
@@ -176,8 +205,7 @@ app.post('/api/products', upload.single('image'), async (req, res) => {
   }
 });
 
-// PUT update product (multipart/form-data or JSON)
-app.put('/api/products/:id', upload.single('image'), async (req, res) => {
+app.put('/api/products/:id', verifyAdmin, upload.single('image'), async (req, res) => {
   const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
@@ -198,8 +226,7 @@ app.put('/api/products/:id', upload.single('image'), async (req, res) => {
   }
 });
 
-// DELETE product
-app.delete('/api/products/:id', async (req, res) => {
+app.delete('/api/products/:id', verifyAdmin, async (req, res) => {
   try {
     const { rowCount } = await pool.query('DELETE FROM Products WHERE id=$1', [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: 'Product not found' });
@@ -210,9 +237,10 @@ app.delete('/api/products/:id', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// ✅ NEW — SERVICES ENDPOINTS (Full CRUD)
+// SERVICES ENDPOINTS
+// GET /api/services and GET /api/services/:id — public
+// POST, PUT, DELETE — protected
 // ─────────────────────────────────────────
-// GET all services
 app.get('/api/services', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM Services ORDER BY id');
@@ -222,7 +250,6 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-// GET single service by ID
 app.get('/api/services/:id', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM Services WHERE id=$1', [req.params.id]);
@@ -233,8 +260,7 @@ app.get('/api/services/:id', async (req, res) => {
   }
 });
 
-// POST create service (multipart/form-data or JSON)
-app.post('/api/services', upload.single('image'), async (req, res) => {
+app.post('/api/services', verifyAdmin, upload.single('image'), async (req, res) => {
   const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
@@ -254,8 +280,7 @@ app.post('/api/services', upload.single('image'), async (req, res) => {
   }
 });
 
-// PUT update service (multipart/form-data or JSON)
-app.put('/api/services/:id', upload.single('image'), async (req, res) => {
+app.put('/api/services/:id', verifyAdmin, upload.single('image'), async (req, res) => {
   const { name, price } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
@@ -276,8 +301,7 @@ app.put('/api/services/:id', upload.single('image'), async (req, res) => {
   }
 });
 
-// DELETE service
-app.delete('/api/services/:id', async (req, res) => {
+app.delete('/api/services/:id', verifyAdmin, async (req, res) => {
   try {
     const { rowCount } = await pool.query('DELETE FROM Services WHERE id=$1', [req.params.id]);
     if (!rowCount) return res.status(404).json({ error: 'Service not found' });
@@ -288,10 +312,9 @@ app.delete('/api/services/:id', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// ORDERS ENDPOINTS
+// ORDERS ENDPOINTS — all protected
 // ─────────────────────────────────────────
-// GET all orders
-app.get('/api/orders', async (req, res) => {
+app.get('/api/orders', verifyAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM Orders ORDER BY "orderDate" DESC');
     res.json(rows);
@@ -300,8 +323,7 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
-// POST create order
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', verifyAdmin, async (req, res) => {
   const { customerName, customerPhone, totalAmount } = req.body;
   if (!customerName || !customerPhone || totalAmount === undefined) {
     return res.status(400).json({ error: 'customerName, customerPhone, totalAmount required' });
@@ -319,10 +341,9 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// APPOINTMENTS ENDPOINTS
+// APPOINTMENTS ENDPOINTS — all protected
 // ─────────────────────────────────────────
-// GET all appointments
-app.get('/api/appointments', async (req, res) => {
+app.get('/api/appointments', verifyAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT * FROM Appointments ORDER BY "apptDate" ASC, "apptTime" ASC'
@@ -333,8 +354,7 @@ app.get('/api/appointments', async (req, res) => {
   }
 });
 
-// POST create appointment
-app.post('/api/appointments', async (req, res) => {
+app.post('/api/appointments', verifyAdmin, async (req, res) => {
   const { customerName, customerPhone, serviceName, apptDate, apptTime } = req.body;
   if (!customerName || !customerPhone || !serviceName || !apptDate || !apptTime) {
     return res.status(400).json({ error: 'All fields are required' });
@@ -351,8 +371,7 @@ app.post('/api/appointments', async (req, res) => {
   }
 });
 
-// PATCH update appointment status
-app.patch('/api/appointments/:id', async (req, res) => {
+app.patch('/api/appointments/:id', verifyAdmin, async (req, res) => {
   const { status } = req.body;
   try {
     const { rowCount } = await pool.query(
