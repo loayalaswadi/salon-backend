@@ -323,7 +323,7 @@ app.get('/api/orders', verifyAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/orders', verifyAdmin, async (req, res) => {
+app.post('/api/orders', async (req, res) => {
   const { customerName, customerPhone, totalAmount } = req.body;
   if (!customerName || !customerPhone || totalAmount === undefined) {
     return res.status(400).json({ error: 'customerName, customerPhone, totalAmount required' });
@@ -354,7 +354,7 @@ app.get('/api/appointments', verifyAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/appointments', verifyAdmin, async (req, res) => {
+app.post('/api/appointments', async (req, res) => {
   const { customerName, customerPhone, serviceName, apptDate, apptTime } = req.body;
   if (!customerName || !customerPhone || !serviceName || !apptDate || !apptTime) {
     return res.status(400).json({ error: 'All fields are required' });
