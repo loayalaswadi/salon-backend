@@ -61,7 +61,7 @@ app.post('/api/login', (req, res) => {
   if (!password || password !== process.env.ADMIN_PASSWORD) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  const token = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '24h' });
+  const token = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '5m' });
   res.json({ token });
 });
 
