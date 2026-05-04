@@ -123,6 +123,10 @@ async function createTables() {
         image TEXT    DEFAULT ''
       )
     `);
+    // Safely add category column to existing tables without data loss
+    await client.query(`
+      ALTER TABLE Services ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Other'
+    `);
     console.log('✅ Services table ready');
 
     await client.query(`
@@ -261,7 +265,7 @@ app.get('/api/services/:id', async (req, res) => {
 });
 
 app.post('/api/services', verifyAdmin, upload.single('image'), async (req, res) => {
-  const { name, price } = req.body;
+  const { name, price, category } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
@@ -271,8 +275,8 @@ app.post('/api/services', verifyAdmin, upload.single('image'), async (req, res) 
       image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
     const { rows } = await pool.query(
-      'INSERT INTO Services (name, price, image) VALUES ($1, $2, $3) RETURNING *',
-      [name, price, image]
+      'INSERT INTO Services (name, price, image, category) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, price, image, category || 'Other']
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -281,7 +285,7 @@ app.post('/api/services', verifyAdmin, upload.single('image'), async (req, res) 
 });
 
 app.put('/api/services/:id', verifyAdmin, upload.single('image'), async (req, res) => {
-  const { name, price } = req.body;
+  const { name, price, category } = req.body;
   if (!name || price === undefined) {
     return res.status(400).json({ error: 'name and price are required' });
   }
@@ -291,8 +295,8 @@ app.put('/api/services/:id', verifyAdmin, upload.single('image'), async (req, re
       image = await uploadToCloudinary(req.file.buffer, 'salon/services');
     }
     const { rows } = await pool.query(
-      'UPDATE Services SET name=$1, price=$2, image=$3 WHERE id=$4 RETURNING *',
-      [name, price, image, req.params.id]
+      'UPDATE Services SET name=$1, price=$2, image=$3, category=$4 WHERE id=$5 RETURNING *',
+      [name, price, image, category || 'Other', req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Service not found' });
     res.json(rows[0]);
