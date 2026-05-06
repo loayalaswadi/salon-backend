@@ -17,6 +17,13 @@ const streamifier = require('streamifier');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const ALLOWED_CURRENCIES = ['SAR', 'YER_OLD', 'YER_NEW'];
+
+function normalizeCurrency(value) {
+  return ALLOWED_CURRENCIES.includes(value) ? value : 'SAR';
+}
+
+
 // ─────────────────────────────────────────
 // CLOUDINARY CONFIGURATION
 // ─────────────────────────────────────────
@@ -125,11 +132,12 @@ async function createTables() {
     `);
     console.log('✅ Services table ready');
 
-    // ── Safe migration: add variable-pricing columns to Services ──
+    // Safe migrations for variable pricing + currency support
     await client.query(`ALTER TABLE Services ADD COLUMN IF NOT EXISTS "pricingType" TEXT DEFAULT 'fixed'`);
     await client.query(`ALTER TABLE Services ADD COLUMN IF NOT EXISTS "guideImage" TEXT DEFAULT ''`);
     await client.query(`ALTER TABLE Services ADD COLUMN IF NOT EXISTS "priceOptions" JSONB DEFAULT '[]'::jsonb`);
-    console.log('✅ Services pricing columns ready');
+    await client.query(`ALTER TABLE Services ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'SAR'`);
+    console.log('✅ Services pricing/currency columns ready');
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS Appointments (
@@ -144,11 +152,12 @@ async function createTables() {
     `);
     console.log('✅ Appointments table ready');
 
-    // ── Safe migration: add variable-pricing columns to Appointments ──
+    // Safe migrations for appointment price details
     await client.query(`ALTER TABLE Appointments ADD COLUMN IF NOT EXISTS "serviceLevel" TEXT DEFAULT ''`);
     await client.query(`ALTER TABLE Appointments ADD COLUMN IF NOT EXISTS "serviceOptionLabel" TEXT DEFAULT ''`);
     await client.query(`ALTER TABLE Appointments ADD COLUMN IF NOT EXISTS "finalPrice" NUMERIC DEFAULT 0`);
-    console.log('✅ Appointments pricing columns ready');
+    await client.query(`ALTER TABLE Appointments ADD COLUMN IF NOT EXISTS "finalCurrency" TEXT DEFAULT 'SAR'`);
+    console.log('✅ Appointments pricing/currency columns ready');
 
     // Insert sample products if table is empty
     const { rows } = await client.query('SELECT COUNT(*) AS count FROM Products');
@@ -272,19 +281,22 @@ app.get('/api/services/:id', async (req, res) => {
   }
 });
 
-app.post('/api/services', verifyAdmin, upload.fields([{ name: 'image', maxCount: 1 }, { name: 'guideImageFile', maxCount: 1 }]), async (req, res) => {
+app.post('/api/services', verifyAdmin, upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'guideImageFile', maxCount: 1 }
+]), async (req, res) => {
   const { name } = req.body;
   const pricingType = req.body.pricingType || 'fixed';
+  const currency = normalizeCurrency(req.body.currency);
 
   if (!name) {
     return res.status(400).json({ error: 'name is required' });
   }
 
   try {
-    // Service image
     let image = req.body.imageUrl || '';
-    if (req.files && req.files['image'] && req.files['image'][0]) {
-      image = await uploadToCloudinary(req.files['image'][0].buffer, 'salon/services');
+    if (req.files && req.files.image && req.files.image[0]) {
+      image = await uploadToCloudinary(req.files.image[0].buffer, 'salon/services');
     }
 
     let price = parseFloat(req.body.price) || 0;
@@ -292,33 +304,40 @@ app.post('/api/services', verifyAdmin, upload.fields([{ name: 'image', maxCount:
     let priceOptions = [];
 
     if (pricingType === 'variable') {
-      // Guide image upload
-      if (req.files && req.files['guideImageFile'] && req.files['guideImageFile'][0]) {
-        guideImage = await uploadToCloudinary(req.files['guideImageFile'][0].buffer, 'salon/guides');
+      if (req.files && req.files.guideImageFile && req.files.guideImageFile[0]) {
+        guideImage = await uploadToCloudinary(req.files.guideImageFile[0].buffer, 'salon/guides');
       }
-      // Parse and validate priceOptions
+
       try {
         priceOptions = JSON.parse(req.body.priceOptions || '[]');
-      } catch { priceOptions = []; }
+      } catch {
+        priceOptions = [];
+      }
 
       if (!priceOptions.length) {
         return res.status(400).json({ error: 'priceOptions is required for variable pricing' });
       }
+
       for (const opt of priceOptions) {
-        if (!opt.label || opt.price === undefined) {
+        if (!opt.label || opt.price === undefined || opt.price === '') {
           return res.status(400).json({ error: 'Each price option must have label and price' });
         }
+        opt.level = String(opt.level || '').trim();
+        opt.label = String(opt.label || '').trim();
+        opt.price = Number(opt.price);
       }
-      // Set main price to minimum option price for backward compatibility
-      price = Math.min(...priceOptions.map(o => parseFloat(o.price)));
+
+      price = Math.min(...priceOptions.map(o => Number(o.price)));
     } else {
       if (!price) return res.status(400).json({ error: 'price is required for fixed pricing' });
+      guideImage = '';
+      priceOptions = [];
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO Services (name, price, image, "pricingType", "guideImage", "priceOptions")
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name, price, image, pricingType, guideImage, JSON.stringify(priceOptions)]
+      `INSERT INTO Services (name, price, image, "pricingType", "guideImage", "priceOptions", currency)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, price, image, pricingType, guideImage, JSON.stringify(priceOptions), currency]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -326,19 +345,22 @@ app.post('/api/services', verifyAdmin, upload.fields([{ name: 'image', maxCount:
   }
 });
 
-app.put('/api/services/:id', verifyAdmin, upload.fields([{ name: 'image', maxCount: 1 }, { name: 'guideImageFile', maxCount: 1 }]), async (req, res) => {
+app.put('/api/services/:id', verifyAdmin, upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'guideImageFile', maxCount: 1 }
+]), async (req, res) => {
   const { name } = req.body;
   const pricingType = req.body.pricingType || 'fixed';
+  const currency = normalizeCurrency(req.body.currency);
 
   if (!name) {
     return res.status(400).json({ error: 'name is required' });
   }
 
   try {
-    // Service image — keep existing if nothing new provided
     let image = req.body.imageUrl || '';
-    if (req.files && req.files['image'] && req.files['image'][0]) {
-      image = await uploadToCloudinary(req.files['image'][0].buffer, 'salon/services');
+    if (req.files && req.files.image && req.files.image[0]) {
+      image = await uploadToCloudinary(req.files.image[0].buffer, 'salon/services');
     }
 
     let price = parseFloat(req.body.price) || 0;
@@ -346,31 +368,40 @@ app.put('/api/services/:id', verifyAdmin, upload.fields([{ name: 'image', maxCou
     let priceOptions = [];
 
     if (pricingType === 'variable') {
-      // Guide image upload
-      if (req.files && req.files['guideImageFile'] && req.files['guideImageFile'][0]) {
-        guideImage = await uploadToCloudinary(req.files['guideImageFile'][0].buffer, 'salon/guides');
+      if (req.files && req.files.guideImageFile && req.files.guideImageFile[0]) {
+        guideImage = await uploadToCloudinary(req.files.guideImageFile[0].buffer, 'salon/guides');
       }
+
       try {
         priceOptions = JSON.parse(req.body.priceOptions || '[]');
-      } catch { priceOptions = []; }
+      } catch {
+        priceOptions = [];
+      }
 
       if (!priceOptions.length) {
         return res.status(400).json({ error: 'priceOptions is required for variable pricing' });
       }
+
       for (const opt of priceOptions) {
-        if (!opt.label || opt.price === undefined) {
+        if (!opt.label || opt.price === undefined || opt.price === '') {
           return res.status(400).json({ error: 'Each price option must have label and price' });
         }
+        opt.level = String(opt.level || '').trim();
+        opt.label = String(opt.label || '').trim();
+        opt.price = Number(opt.price);
       }
-      price = Math.min(...priceOptions.map(o => parseFloat(o.price)));
+
+      price = Math.min(...priceOptions.map(o => Number(o.price)));
     } else {
       if (!price) return res.status(400).json({ error: 'price is required for fixed pricing' });
+      guideImage = '';
+      priceOptions = [];
     }
 
     const { rows } = await pool.query(
-      `UPDATE Services SET name=$1, price=$2, image=$3, "pricingType"=$4, "guideImage"=$5, "priceOptions"=$6
-       WHERE id=$7 RETURNING *`,
-      [name, price, image, pricingType, guideImage, JSON.stringify(priceOptions), req.params.id]
+      `UPDATE Services SET name=$1, price=$2, image=$3, "pricingType"=$4, "guideImage"=$5, "priceOptions"=$6, currency=$7
+       WHERE id=$8 RETURNING *`,
+      [name, price, image, pricingType, guideImage, JSON.stringify(priceOptions), currency, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Service not found' });
     res.json(rows[0]);
@@ -419,7 +450,9 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// APPOINTMENTS ENDPOINTS — all protected
+// APPOINTMENTS ENDPOINTS
+// GET, PATCH, DELETE — protected
+// POST — public booking
 // ─────────────────────────────────────────
 app.get('/api/appointments', verifyAdmin, async (req, res) => {
   try {
@@ -434,54 +467,56 @@ app.get('/api/appointments', verifyAdmin, async (req, res) => {
 
 app.post('/api/appointments', async (req, res) => {
   const { customerName, customerPhone, apptDate, apptTime } = req.body;
-  const serviceId    = req.body.serviceId;
-  const serviceLevel = req.body.serviceLevel || '';
+  const serviceId = req.body.serviceId;
+  const requestedServiceName = req.body.serviceName;
+  const requestedServiceLevel = req.body.serviceLevel || '';
 
-  if (!customerName || !customerPhone || !apptDate || !apptTime || !serviceId) {
-    return res.status(400).json({ error: 'All fields are required' });
+  if (!customerName || !customerPhone || !apptDate || !apptTime || (!serviceId && !requestedServiceName)) {
+    return res.status(400).json({ error: 'customerName, customerPhone, service, apptDate and apptTime are required' });
   }
 
   try {
-    // ── Look up the service from the database ──
-    const svcResult = await pool.query('SELECT * FROM Services WHERE id = $1', [serviceId]);
-    if (!svcResult.rows.length) {
+    let serviceResult;
+    if (serviceId) {
+      serviceResult = await pool.query('SELECT * FROM Services WHERE id=$1', [serviceId]);
+    } else {
+      serviceResult = await pool.query('SELECT * FROM Services WHERE name=$1 ORDER BY id LIMIT 1', [requestedServiceName]);
+    }
+
+    if (!serviceResult.rows.length) {
       return res.status(404).json({ error: 'Service not found' });
     }
-    const service = svcResult.rows[0];
 
-    let serviceName        = service.name;
-    let finalPrice         = 0;
-    let serviceOptionLabel = '';
-
+    const service = serviceResult.rows[0];
     const pricingType = service.pricingType || 'fixed';
+    let serviceLevel = '';
+    let serviceOptionLabel = '';
+    let finalPrice = Number(service.price) || 0;
+    const finalCurrency = normalizeCurrency(service.currency);
 
-    if (pricingType === 'fixed') {
-      // Fixed price — take price from DB, ignore anything the frontend sent
-      finalPrice = parseFloat(service.price) || 0;
-    } else {
-      // Variable price — validate serviceLevel against priceOptions
-      if (!serviceLevel) {
+    if (pricingType === 'variable') {
+      if (!requestedServiceLevel) {
         return res.status(400).json({ error: 'Please select hair length level' });
       }
 
-      const priceOptions = (typeof service.priceOptions === 'string'
-        ? JSON.parse(service.priceOptions || '[]')
-        : service.priceOptions) || [];
+      const options = Array.isArray(service.priceOptions)
+        ? service.priceOptions
+        : JSON.parse(service.priceOptions || '[]');
 
-      const matchedOption = priceOptions.find(o => String(o.level) === String(serviceLevel));
+      const matchedOption = options.find(opt => String(opt.level) === String(requestedServiceLevel));
       if (!matchedOption) {
         return res.status(400).json({ error: 'Invalid hair length level' });
       }
 
-      finalPrice         = parseFloat(matchedOption.price) || 0;
-      serviceOptionLabel = matchedOption.label || '';
+      serviceLevel = String(matchedOption.level || requestedServiceLevel);
+      serviceOptionLabel = matchedOption.label || `مستوى ${serviceLevel}`;
+      finalPrice = Number(matchedOption.price) || 0;
     }
 
-    // ── Insert appointment with server-determined values ──
     const { rows } = await pool.query(
-      `INSERT INTO Appointments ("customerName", "customerPhone", "serviceName", "apptDate", "apptTime", "serviceLevel", "serviceOptionLabel", "finalPrice")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [customerName, customerPhone, serviceName, apptDate, apptTime, serviceLevel, serviceOptionLabel, finalPrice]
+      `INSERT INTO Appointments ("customerName", "customerPhone", "serviceName", "apptDate", "apptTime", "serviceLevel", "serviceOptionLabel", "finalPrice", "finalCurrency")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [customerName, customerPhone, service.name, apptDate, apptTime, serviceLevel, serviceOptionLabel, finalPrice, finalCurrency]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
